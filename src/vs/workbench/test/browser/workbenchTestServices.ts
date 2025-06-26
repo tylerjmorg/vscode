@@ -185,6 +185,8 @@ import { IActionViewItemService, NullActionViewItemService } from '../../../plat
 import { IMarkdownString } from '../../../base/common/htmlContent.js';
 import { ITreeSitterLibraryService } from '../../../editor/common/services/treeSitter/treeSitterLibraryService.js';
 import { TestTreeSitterLibraryService } from '../../../editor/test/common/services/testTreeSitterLibraryService.js';
+import { IStartupEditorProvider } from '../../services/layout/browser/startupEditorProviders.js';
+import { IEditorToOpen } from '../../browser/layout.js';
 
 export function createFileEditorInput(instantiationService: IInstantiationService, resource: URI): FileEditorInput {
 	return instantiationService.createInstance(FileEditorInput, resource, undefined, undefined, undefined, undefined, undefined, undefined);
@@ -682,6 +684,10 @@ export class TestLayoutService implements IWorkbenchLayoutService {
 	updateWindowMaximizedState(targetWindow: Window, maximized: boolean): void { }
 	getVisibleNeighborPart(part: Parts, direction: Direction): Parts | undefined { return undefined; }
 	focus() { }
+	registerStartupEditorProvider(provider: IStartupEditorProvider): void { }
+	resolveStartupEditor(): Promise<IEditorToOpen | undefined> {
+		return Promise.resolve(undefined);
+	}
 }
 
 const activeViewlet: PaneComposite = {} as any;

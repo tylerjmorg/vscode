@@ -13,6 +13,7 @@ import { EditorInputCapabilities, GroupIdentifier, isResourceEditorInput, IUntyp
 import { SidebarPart } from './parts/sidebar/sidebarPart.js';
 import { PanelPart } from './parts/panel/panelPart.js';
 import { Position, Parts, PanelOpensMaximizedOptions, IWorkbenchLayoutService, positionFromString, positionToString, panelOpensMaximizedFromString, PanelAlignment, ActivityBarPosition, LayoutSettings, MULTI_WINDOW_PARTS, SINGLE_WINDOW_PARTS, ZenModeSettings, EditorTabsMode, EditorActionsLocation, shouldShowCustomTitleBar, isHorizontal, isMultiWindowPart } from '../services/layout/browser/layoutService.js';
+import { IStartupEditorProvider } from '../services/layout/browser/startupEditorProviders.js';
 import { isTemporaryWorkspace, IWorkspaceContextService, WorkbenchState } from '../../platform/workspace/common/workspace.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../platform/storage/common/storage.js';
 import { IConfigurationChangeEvent, IConfigurationService } from '../../platform/configuration/common/configuration.js';
@@ -49,6 +50,7 @@ import { ITelemetryService } from '../../platform/telemetry/common/telemetry.js'
 import { IAuxiliaryWindowService } from '../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { CodeWindow, mainWindow } from '../../base/browser/window.js';
 
+
 //#region Layout Implementation
 
 interface ILayoutRuntimeState {
@@ -65,7 +67,7 @@ interface ILayoutRuntimeState {
 	};
 }
 
-interface IEditorToOpen {
+export interface IEditorToOpen {
 	readonly editor: IUntypedEditorInput;
 	readonly viewColumn?: number;
 }
@@ -259,6 +261,9 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 	private readonly parts = new Map<string, Part>();
 
+	// Startup editor providers
+	private readonly startupEditorProviders: IStartupEditorProvider[] = [];
+
 	private initialized = false;
 	private workbenchGrid!: SerializableGrid<ISerializableView>;
 
@@ -300,6 +305,9 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 		protected readonly parent: HTMLElement
 	) {
 		super();
+	}
+	getStartupEditorProviders(): readonly IStartupEditorProvider[] {
+		throw new Error('Method not implemented.');
 	}
 
 	protected initLayout(accessor: ServicesAccessor): void {
@@ -841,7 +849,11 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 			}];
 		}
 
-		return [];
+		const startupEditor = await this.resolveStartupEditor();
+		if (startupEditor) {
+			return [startupEditor];
+		}
+		return []; // no editors to open
 	}
 
 	private _openedDefaultEditors: boolean = false;
@@ -2257,6 +2269,30 @@ export abstract class Layout extends Disposable implements IWorkbenchLayoutServi
 
 		return undefined;
 	}
+
+	// #region Startup Editor Providers
+
+	registerStartupEditorProvider(provider: IStartupEditorProvider): void {
+		this.startupEditorProviders.push(provider);
+	}
+
+	async resolveStartupEditor(): Promise<IEditorToOpen | undefined> {
+		for (const provider of this.startupEditorProviders) {
+			try {
+				const editor = await provider.provideStartupEditor();
+				if (editor) {
+					return editor;
+				}
+			} catch (error) {
+				// Log error but continue trying other providers
+				console.error('StartupEditorProvider failed:', provider.id, error);
+			}
+		}
+
+		return undefined;
+	}
+
+	// #endregion
 
 	private onDidChangeWCO(): void {
 		const bannerFirst = this.workbenchGrid.getNeighborViews(this.titleBarPartView, Direction.Up, false).length > 0;

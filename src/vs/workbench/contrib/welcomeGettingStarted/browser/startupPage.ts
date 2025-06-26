@@ -4,8 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from '../../../../base/common/uri.js';
-import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import * as arrays from '../../../../base/common/arrays.js';
+import { ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IWorkbenchContribution } from '../../../common/contributions.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
@@ -13,22 +13,23 @@ import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { IWorkspaceContextService, UNKNOWN_EMPTY_WINDOW_WORKSPACE, WorkbenchState } from '../../../../platform/workspace/common/workspace.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IWorkingCopyBackupService } from '../../../services/workingCopy/common/workingCopyBackup.js';
-import { ILifecycleService, LifecyclePhase, StartupKind } from '../../../services/lifecycle/common/lifecycle.js';
+import { ILifecycleService, StartupKind } from '../../../services/lifecycle/common/lifecycle.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { IFileService } from '../../../../platform/files/common/files.js';
 import { joinPath } from '../../../../base/common/resources.js';
-import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
-import { GettingStartedEditorOptions, GettingStartedInput, gettingStartedInputTypeId } from './gettingStartedInput.js';
+import { GettingStartedEditorOptions, GettingStartedInput } from './gettingStartedInput.js';
 import { IWorkbenchEnvironmentService } from '../../../services/environment/common/environmentService.js';
 import { IStorageService, StorageScope, StorageTarget } from '../../../../platform/storage/common/storage.js';
 import { getTelemetryLevel } from '../../../../platform/telemetry/common/telemetryUtils.js';
 import { TelemetryLevel } from '../../../../platform/telemetry/common/telemetry.js';
 import { IProductService } from '../../../../platform/product/common/productService.js';
-import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { localize } from '../../../../nls.js';
+
 import { IEditorResolverService, RegisteredEditorPriority } from '../../../services/editor/common/editorResolverService.js';
 import { TerminalCommandId } from '../../terminal/common/terminal.js';
 import { ILogService } from '../../../../platform/log/common/log.js';
+import { IEditorToOpen } from '../../../browser/layout.js';
+import { IWorkbenchLayoutService } from '../../../services/layout/browser/layoutService.js';
 
 export const restoreWalkthroughsConfigurationKey = 'workbench.welcomePage.restorableWalkthroughs';
 export type RestoreWalkthroughsConfigurationValue = { folder: string; category?: string; step?: string };
@@ -86,16 +87,21 @@ export class StartupPageRunnerContribution extends Disposable implements IWorkbe
 		@IFileService private readonly fileService: IFileService,
 		@IWorkspaceContextService private readonly contextService: IWorkspaceContextService,
 		@ILifecycleService private readonly lifecycleService: ILifecycleService,
-		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService,
 		@IProductService private readonly productService: IProductService,
 		@ICommandService private readonly commandService: ICommandService,
 		@IWorkbenchEnvironmentService private readonly environmentService: IWorkbenchEnvironmentService,
 		@IStorageService private readonly storageService: IStorageService,
 		@ILogService private readonly logService: ILogService,
-		@INotificationService private readonly notificationService: INotificationService
+		@IWorkbenchLayoutService private readonly layoutService: IWorkbenchLayoutService
 	) {
 		super();
-		this.run().then(undefined, onUnexpectedError);
+
+		// Register as a startup editor provider instead of waiting for LifecyclePhase.Restored
+		this.layoutService.registerStartupEditorProvider({
+			id: 'welcomePage',
+			provideStartupEditor: () => this.provideStartupEditor()
+		});
+
 		this._register(this.editorService.onDidCloseEditor((e) => {
 			if (e.editor instanceof GettingStartedInput) {
 				e.editor.selectedCategory = undefined;
@@ -104,11 +110,7 @@ export class StartupPageRunnerContribution extends Disposable implements IWorkbe
 		}));
 	}
 
-	private async run() {
-
-		// Wait for resolving startup editor until we are restored to reduce startup pressure
-		await this.lifecycleService.when(LifecyclePhase.Restored);
-
+	private async provideStartupEditor(): Promise<IEditorToOpen | undefined> {
 		// Always open Welcome page for first-launch, no matter what is open or which startupEditor is set.
 		if (
 			this.productService.enableTelemetry
@@ -121,51 +123,50 @@ export class StartupPageRunnerContribution extends Disposable implements IWorkbe
 		}
 
 		if (this.tryOpenWalkthroughForFolder()) {
-			return;
+			return {
+				editor: {
+					resource: GettingStartedInput.RESOURCE,
+					options: { pinned: false, index: 0 }
+				}
+			};
 		}
 
 		const enabled = isStartupPageEnabled(this.configurationService, this.contextService, this.environmentService, this.logService);
 		if (enabled && this.lifecycleService.startupKind !== StartupKind.ReloadedWindow) {
 			const hasBackups = await this.workingCopyBackupService.hasBackups();
-			if (hasBackups) { return; }
+			if (hasBackups) {
+				return undefined;
+			}
 
-			// Open the welcome even if we opened a set of default editors
-			if (!this.editorService.activeEditor || this.layoutService.openedDefaultEditors) {
-				const startupEditorSetting = this.configurationService.inspect<string>(configurationKey);
+			const startupEditorSetting = this.configurationService.inspect<string>(configurationKey);
 
-				if (startupEditorSetting.value === 'readme') {
-					await this.openReadme();
-				} else if (startupEditorSetting.value === 'welcomePage' || startupEditorSetting.value === 'welcomePageInEmptyWorkbench') {
-					await this.openGettingStarted(true);
-				} else if (startupEditorSetting.value === 'terminal') {
-					this.commandService.executeCommand(TerminalCommandId.CreateTerminalEditor);
+			if (startupEditorSetting.value === 'readme') {
+				// Return untyped editor input for README
+				const readmeUri = await this.findReadme();
+				if (readmeUri) {
+					return {
+						editor: { resource: readmeUri }
+					};
 				}
+			} else if (startupEditorSetting.value === 'welcomePage' || startupEditorSetting.value === 'welcomePageInEmptyWorkbench') {
+				// Return untyped editor input for Welcome page
+				return {
+					editor: {
+						resource: GettingStartedInput.RESOURCE,
+						options: { pinned: false, index: 0 }
+					}
+				};
+			} else if (startupEditorSetting.value === 'terminal') {
+				// Open terminal and return undefined (no editor to open)
+				this.commandService.executeCommand(TerminalCommandId.New);
+				return undefined;
 			}
 		}
+
+		return undefined;
 	}
 
-	private tryOpenWalkthroughForFolder(): boolean {
-		const toRestore = this.storageService.get(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);
-		if (!toRestore) {
-			return false;
-		}
-		else {
-			const restoreData: RestoreWalkthroughsConfigurationValue = JSON.parse(toRestore);
-			const currentWorkspace = this.contextService.getWorkspace();
-			if (restoreData.folder === UNKNOWN_EMPTY_WINDOW_WORKSPACE.id || restoreData.folder === currentWorkspace.folders[0].uri.toString()) {
-				const options: GettingStartedEditorOptions = { selectedCategory: restoreData.category, selectedStep: restoreData.step, pinned: false };
-				this.editorService.openEditor({
-					resource: GettingStartedInput.RESOURCE,
-					options
-				});
-				this.storageService.remove(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);
-				return true;
-			}
-		}
-		return false;
-	}
-
-	private async openReadme() {
+	private async findReadme(): Promise<URI | undefined> {
 		const readmes = arrays.coalesce(
 			await Promise.all(this.contextService.getWorkspace().folders.map(
 				async folder => {
@@ -177,38 +178,24 @@ export class StartupPageRunnerContribution extends Disposable implements IWorkbe
 					else { return undefined; }
 				})));
 
-		if (!this.editorService.activeEditor) {
-			if (readmes.length) {
-				const isMarkDown = (readme: URI) => readme.path.toLowerCase().endsWith('.md');
-				await Promise.all([
-					this.commandService.executeCommand('markdown.showPreview', null, readmes.filter(isMarkDown), { locked: true }).catch(error => {
-						this.notificationService.error(localize('startupPage.markdownPreviewError', 'Could not open markdown preview: {0}.\n\nPlease make sure the markdown extension is enabled.', error.message));
-					}),
-					this.editorService.openEditors(readmes.filter(readme => !isMarkDown(readme)).map(readme => ({ resource: readme }))),
-				]);
-			} else {
-				// If no readme is found, default to showing the welcome page.
-				await this.openGettingStarted();
-			}
-		}
+		return readmes.length > 0 ? readmes[0] : undefined;
 	}
 
-	private async openGettingStarted(showTelemetryNotice?: boolean) {
-		const startupEditorTypeID = gettingStartedInputTypeId;
-		const editor = this.editorService.activeEditor;
-
-		// Ensure that the welcome editor won't get opened more than once
-		if (editor?.typeId === startupEditorTypeID || this.editorService.editors.some(e => e.typeId === startupEditorTypeID)) {
-			return;
+	private tryOpenWalkthroughForFolder(): boolean {
+		const toRestore = this.storageService.get(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);
+		if (!toRestore) {
+			return false;
 		}
-
-		const options: GettingStartedEditorOptions = editor ? { pinned: false, index: 0, showTelemetryNotice } : { pinned: false, showTelemetryNotice };
-		if (startupEditorTypeID === gettingStartedInputTypeId) {
-			this.editorService.openEditor({
-				resource: GettingStartedInput.RESOURCE,
-				options,
-			});
+		else {
+			const restoreData: RestoreWalkthroughsConfigurationValue = JSON.parse(toRestore);
+			const currentWorkspace = this.contextService.getWorkspace();
+			if (restoreData.folder === UNKNOWN_EMPTY_WINDOW_WORKSPACE.id || restoreData.folder === currentWorkspace.folders[0].uri.toString()) {
+				// Don't open the editor here anymore - we'll return it from provideStartupEditor
+				this.storageService.remove(restoreWalkthroughsConfigurationKey, StorageScope.PROFILE);
+				return true;
+			}
 		}
+		return false;
 	}
 }
 

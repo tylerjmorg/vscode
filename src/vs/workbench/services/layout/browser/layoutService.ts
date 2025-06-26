@@ -15,6 +15,7 @@ import { CustomTitleBarVisibility, TitleBarSetting, getMenuBarVisibility, hasCus
 import { isFullscreen, isWCOEnabled } from '../../../../base/browser/browser.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
+import { IStartupEditorProvider } from './startupEditorProviders.js';
 
 export const IWorkbenchLayoutService = refineServiceDecorator<ILayoutService, IWorkbenchLayoutService>(ILayoutService);
 
@@ -330,6 +331,16 @@ export interface IWorkbenchLayoutService extends ILayoutService {
 	 * Returns the next visible view part in a given direction in the main window.
 	 */
 	getVisibleNeighborPart(part: Parts, direction: Direction): Parts | undefined;
+
+	/**
+	 * Register a startup editor provider.
+	 */
+	registerStartupEditorProvider(provider: IStartupEditorProvider): void;
+
+	/**
+	 * Resolve the first startup editor from all providers.
+	 */
+	resolveStartupEditor(): Promise<import('../../../browser/layout.js').IEditorToOpen | undefined>;
 }
 
 export function shouldShowCustomTitleBar(configurationService: IConfigurationService, window: Window, menuBarToggled?: boolean): boolean {
