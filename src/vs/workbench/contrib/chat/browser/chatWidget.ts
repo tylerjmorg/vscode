@@ -40,7 +40,7 @@ import { buttonSecondaryBackground, buttonSecondaryForeground, buttonSecondaryHo
 import { asCssVariable } from '../../../../platform/theme/common/colorUtils.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { checkModeOption } from '../common/chat.js';
-import { IChatAgentCommand, IChatAgentData, IChatAgentService, IChatWelcomeMessageContent } from '../common/chatAgents.js';
+import { IChatAgentCommand, IChatAgentData, IChatAgentService, /**IChatWelcomeMessageContent**/ } from '../common/chatAgents.js';
 import { ChatContextKeys } from '../common/chatContextKeys.js';
 import { applyingChatEditsFailedContextKey, decidedChatEditingResourceContextKey, hasAppliedChatEditsContextKey, hasUndecidedChatEditingResourceContextKey, IChatEditingService, IChatEditingSession, inChatEditingSessionContextKey, ModifiedFileEntryState } from '../common/chatEditingService.js';
 import { ChatPauseState, IChatModel, IChatResponseModel } from '../common/chatModel.js';
@@ -65,7 +65,7 @@ import { ChatEditorOptions } from './chatOptions.js';
 import './media/chat.css';
 import './media/chatAgentHover.css';
 import './media/chatViewWelcome.css';
-import { ChatViewWelcomePart } from './viewsWelcome/chatViewWelcomeController.js';
+import { ChatViewWelcomePart, IChatSuggestedPrompts } from './viewsWelcome/chatViewWelcomeController.js';
 import { MicrotaskDelay } from '../../../../base/common/symbols.js';
 import { IChatRequestVariableEntry, ChatRequestVariableSet as ChatRequestVariableSet, isPromptFileVariableEntry, toPromptFileVariableEntry, PromptFileVariableKind } from '../common/chatVariableEntries.js';
 import { PromptsConfig } from '../common/promptSyntax/config/config.js';
@@ -517,6 +517,7 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		this.container = dom.append(parent, $('.interactive-session'));
 		this.welcomeMessageContainer = dom.append(this.container, $('.chat-welcome-view-container', { style: 'display: none' }));
 		this._register(dom.addStandardDisposableListener(this.welcomeMessageContainer, dom.EventType.CLICK, () => this.focusInput()));
+		// if welcomeView content is experimental, we want to not show the input).
 		if (renderInputOnTop) {
 			this.createInput(this.container, { renderFollowups, renderStyle });
 			this.listContainer = dom.append(this.container, $(`.interactive-list`));
@@ -711,21 +712,41 @@ export class ChatWidget extends Disposable implements IChatWidget {
 
 		const numItems = this.viewModel?.getItems().length ?? 0;
 		if (!numItems) {
-			const welcomeContent = this.getWelcomeViewContent();
+
+			const welcomeContent = {
+				title: 'Get Started with VS Code',
+				message: new MarkdownString(localize('chatWidget.welcomeMessage', " Get Started")),
+				icon: Codicon.copilotLarge
+			};
+
 			dom.clearNode(this.welcomeMessageContainer);
-			const tips = this.input.currentMode === ChatMode.Ask
-				? new MarkdownString(localize('chatWidget.tips', "{0} or type {1} to attach context\n\n{2} to chat with extensions\n\nType {3} to use commands", '$(attach)', '#', '$(mention)', '/'), { supportThemeIcons: true })
-				: new MarkdownString(localize('chatWidget.tips.withoutParticipants', "{0} or type {1} to attach context", '$(attach)', '#'), { supportThemeIcons: true });
 			const defaultAgent = this.chatAgentService.getDefaultAgent(this.location, this.input.currentMode);
 			const additionalMessage = defaultAgent?.metadata.additionalWelcomeMessage;
+			this.welcomeMessageContainer.classList.add('experimental-welcome-view');
 			this.welcomePart.value = this.instantiationService.createInstance(
 				ChatViewWelcomePart,
-				{ ...welcomeContent, tips, additionalMessage },
+				{ ...welcomeContent, inputPart: this.inputPart.element, suggestedPrompts: this.getSuggestedPrompts(), additionalMessage },
 				{
 					location: this.location,
 					isWidgetAgentWelcomeViewContent: this.input?.currentMode === ChatMode.Agent
 				}
 			);
+
+			// const welcomeContent = this.getWelcomeViewContent();
+			// dom.clearNode(this.welcomeMessageContainer);
+			// const tips = this.input.currentMode === ChatMode.Ask
+			// 	? new MarkdownString(localize('chatWidget.tips', "{0} or type {1} to attach context\n\n{2} to chat with extensions\n\nType {3} to use commands", '$(attach)', '#', '$(mention)', '/'), { supportThemeIcons: true })
+			// 	: new MarkdownString(localize('chatWidget.tips.withoutParticipants', "{0} or type {1} to attach context", '$(attach)', '#'), { supportThemeIcons: true });
+			// const defaultAgent = this.chatAgentService.getDefaultAgent(this.location, this.input.currentMode);
+			// const additionalMessage = defaultAgent?.metadata.additionalWelcomeMessage;
+			// this.welcomePart.value = this.instantiationService.createInstance(
+			// 	ChatViewWelcomePart,
+			// 	{ ...welcomeContent, tips, additionalMessage },
+			// 	{
+			// 		location: this.location,
+			// 		isWidgetAgentWelcomeViewContent: this.input?.currentMode === ChatMode.Agent
+			// 	}
+			// );
 			dom.append(this.welcomeMessageContainer, this.welcomePart.value.element);
 		}
 
@@ -735,28 +756,45 @@ export class ChatWidget extends Disposable implements IChatWidget {
 		}
 	}
 
-	private getWelcomeViewContent(): IChatWelcomeMessageContent {
-		const baseMessage = localize('chatMessage', "Copilot is powered by AI, so mistakes are possible. Review output carefully before use.");
-		if (this.input.currentMode === ChatMode.Ask) {
-			return {
-				title: localize('chatDescription', "Ask Copilot"),
-				message: new MarkdownString(baseMessage),
-				icon: Codicon.copilotLarge
-			};
-		} else if (this.input.currentMode === ChatMode.Edit) {
-			return {
-				title: localize('editsTitle', "Edit with Copilot"),
-				message: new MarkdownString(localize('editsMessage', "Start your editing session by defining a set of files that you want to work with. Then ask Copilot for the changes you want to make.") + `\n\n${baseMessage}`),
-				icon: Codicon.copilotLarge
-			};
-		} else {
-			return {
-				title: localize('editsTitle', "Edit with Copilot"),
-				message: new MarkdownString(localize('agentMessage', "Ask Copilot to edit your files in [agent mode]({0}). Copilot will automatically use multiple requests to pick files to edit, run terminal commands, and iterate on errors.", 'https://aka.ms/vscode-copilot-agent') + `\n\n${baseMessage}`),
-				icon: Codicon.copilotLarge
-			};
-		}
+	// private getWelcomeViewContent(): IChatWelcomeMessageContent {
+	// 	const baseMessage = localize('chatMessage', "Copilot is powered by AI, so mistakes are possible. Review output carefully before use.");
+	// 	if (this.input.currentMode === ChatMode.Ask) {
+	// 		return {
+	// 			title: localize('chatDescription', "Ask Copilot"),
+	// 			message: new MarkdownString(baseMessage),
+	// 			icon: Codicon.copilotLarge
+	// 		};
+	// 	} else if (this.input.currentMode === ChatMode.Edit) {
+	// 		return {
+	// 			title: localize('editsTitle', "Edit with Copilot"),
+	// 			message: new MarkdownString(localize('editsMessage', "Start your editing session by defining a set of files that you want to work with. Then ask Copilot for the changes you want to make.") + `\n\n${baseMessage}`),
+	// 			icon: Codicon.copilotLarge
+	// 		};
+	// 	} else {
+	// 		return {
+	// 			title: localize('editsTitle', "Edit with Copilot"),
+	// 			message: new MarkdownString(localize('agentMessage', "Ask Copilot to edit your files in [agent mode]({0}). Copilot will automatically use multiple requests to pick files to edit, run terminal commands, and iterate on errors.", 'https://aka.ms/vscode-copilot-agent') + `\n\n${baseMessage}`),
+	// 			icon: Codicon.copilotLarge
+	// 		};
+	// 	}
+	// }
+
+	private getSuggestedPrompts(): IChatSuggestedPrompts[] {
+
+		return [
+			{
+				icon: Codicon.vscode,
+				label: localize('chatWidget.suggestedPrompts.gettingStarted', "Ask @vscode"),
+				prompt: '@vscode Help me get started with VS Code?',
+			},
+			{
+				icon: Codicon.newFolder,
+				label: localize('chatWidget.suggestedPrompts.newProject', "Create a #new Project"),
+				prompt: '#new Create a new project for me',
+			}
+		];
 	}
+
 
 	private async renderChatEditingSessionState() {
 		if (!this.input) {
@@ -1540,7 +1578,11 @@ export class ChatWidget extends Disposable implements IChatWidget {
 			});
 
 			if (result) {
-				this.input.acceptInput(isUserQuery);
+
+				const renderFollowups = this.viewOptions.renderFollowups ?? false;
+				const renderStyle = this.viewOptions.renderStyle;
+				this.createInput(this.container, { renderFollowups, renderStyle });
+				this.inputPart.acceptInput(isUserQuery);
 				this._onDidSubmitAgent.fire({ agent: result.agent, slashCommand: result.slashCommand });
 				result.responseCompletePromise.then(() => {
 					const responses = this.viewModel?.getItems().filter(isResponseVM);
